@@ -1,45 +1,44 @@
 #!/usr/bin/env python3
-from transformers import GPT2Tokenizer
-from sglang.srt.mem_cache.kv_cache_scheduler import Scheduler, Request
-from sglang.srt.mem_cache import tree_cache
+import sys
+# 1) Make sure we pick up your local clone first:
+sys.path.insert(0, "/sgl-workspace/sglang/python")
 
-# ————————————————————————————————————————————
-# Helper to pretty-print the radix tree
+from transformers import GPT2Tokenizer
+from sglang.srt.mem_cache.radix_cache import RadixCache
+
 def dump(node, depth=0):
     indent = "  " * depth
-    prefix = node.prefix.decode(errors="ignore")
-    print(f"{indent!r:<12}  (len={len(node.prefix):2}, refs={node.ref_count})")
+    # try to decode bytes to a printable prefix
+    try:
+        label = node.prefix.decode("utf-8")
+    except:
+        label = repr(node.prefix)
+    print(f"{indent!r:<12}  (len={len(node.prefix):2}, refs={node.ref_count})  → {label!r}")
     for child in getattr(node, "children", []):
-        dump(child, depth+1)
-# ————————————————————————————————————————————
+        dump(child, depth + 1)
 
 def main():
-    # 1) Load a GPT-2 tokenizer (for real token IDs)
+    # 1) load GPT-2 tokenizer so we get real token-IDs
     tok = GPT2Tokenizer.from_pretrained("gpt2")
+    # 2) make an empty radix-tree
+    cache = RadixCache()
 
-    # 2) Create a scheduler with small cache for demonstration
-    sched = Scheduler(max_batch_size=4, max_tokens_cached=64)
-
-    # 3) Define your multi-turn prompts
+    # 3) multi-turn prompts
     prompts = [
         "Hello, how are you?",
         "Can you tell me a joke?",
-        "Why is that funny?",
+        "Why is that funny?"
     ]
 
     for turn, text in enumerate(prompts, start=1):
-        # Encode to token IDs (no special tokens)
         ids = tok.encode(text, add_special_tokens=False)
+        # insert every prefix of the token-ID sequence
+        for L in range(1, len(ids) + 1):
+            prefix_bytes = bytes(ids[:L])
+            cache.insert(prefix_bytes)
 
-        # Wrap into an SGLang Request
-        req = Request(request_id=turn, tokens=ids)
-
-        # ---- “prefill” step: match prefixes & insert new slots ----
-        new_reqs = sched.get_new_batch_prefill([req])
-        sched.process_batch_result_prefill(new_reqs)
-
-        print(f"\n=== After turn {turn!r} (‘{text}’) ===")
-        dump(tree_cache._root)
+        print(f"\n=== After turn {turn} (‘{text}’) ===")
+        dump(cache._root)
 
 if __name__ == "__main__":
     main()
