@@ -52,7 +52,7 @@ def main():
 
     prompts = [
         "Hello, I have a statement that needs refinement, please change all the I to we in the following statement and keep the rest the same. I start working on SGLang two months ago, I first try to explore the tree structure then visualize it.",
-        "Hello, the statement still needs refinement, please change all the verbs to past tense in the statement you just edited and keep the rest the same.",
+        "Hello, the statement still needs refinement, please change all the verbs to past tense in the statement below you just edited and keep the rest the same. We start working on SGLang two months ago, we first try to explore the tree structure then visualize it.",
         "Hello, how is your day going?",
         "What's the weather like in Paris today?",
         "Hello, how are you now after our talk?"
