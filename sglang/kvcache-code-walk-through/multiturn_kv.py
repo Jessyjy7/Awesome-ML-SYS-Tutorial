@@ -51,7 +51,7 @@ def main():
     cache = RadixCache(None, None, page_size=4, disable=False)
 
     prompts = [
-        "Hello, I have a statement that needs refinement, please change all the I to we in the following statement. I started working on SGLang two months ago, I first tried to explore the tree structure then visualize it.",
+        "Hello, I have a statement that needs refinement, please change all the I to we in the following statement and keep the rest the same. I started working on SGLang two months ago, I first tried to explore the tree structure then visualize it.",
         "Hello, the statement still needs refinement, please change all the verbs to past tense in the statement you just edited and keep the rest the same.",
         "Hello, how is your day going?",
         "What's the weather like in Paris today?",
