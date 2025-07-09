@@ -23,8 +23,8 @@ def graphviz_dump(root: TreeNode, out_path="kv_tree.dot"):
             visit(child, cid)
     visit(root)
     dot.save(out_path)
-    print(f"Graphviz tree written to {out_path!r}.")
-    print("You can render it with: dot -Tpng kv_tree.dot -o kv_tree.png")
+    print(f"Graphviz tree written to {out_path!r}")
+    print("Render: dot -Tpng kv_tree.dot -o kv_tree.png")
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -39,34 +39,40 @@ def main():
 
     model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        device_map="auto" if device == "cuda" else None,
+        torch_dtype=torch.float16 if device=="cuda" else torch.float32,
+        device_map="auto" if device=="cuda" else None,
         load_in_8bit=False,
         use_auth_token=True
     )
 
     cache = RadixCache(None, None, page_size=1, disable=False)
 
-    prompts = [
-        "Hello, I have a statement that needs refinement, please change all the I to we in the following statement and keep the rest the same. I start working on SGLang two months ago, I first try to explore the tree structure then visualize it.",
-        "Hello, the statement still needs refinement, please change all the verbs to past tense in the statement below you just edited and keep the rest the same. We start working on SGLang two months ago, we first try to explore the tree structure then visualize it.",
-        "Hello, how is your day going?",
-        "What's the weather like in Paris today?",
-        "Hello, how are you now after our talk?"
+    essay = (
+        "Once upon a time in a galaxy far away, there lived an explorer who "
+        "sought knowledge beyond the stars. The explorer built a ship with "
+        "advanced technology and embarked on a journey to discover new worlds."
+    )
+    steps = [
+        "Refine grammar and style",
+        "Convert all verbs to past tense",
+        "Tighten the introduction",
+        "Shorten the conclusion",
+        "Improve overall flow and coherence"
     ]
 
     history_ids = []
-    for turn, text in enumerate(prompts, start=1):
-        print(f"\n=== Turn {turn} ===")
-        new_ids = tok.encode(text, add_special_tokens=False)
+    for i, instruction in enumerate(steps, start=1):
+        prompt = f"{instruction}: {essay}"
+        print(f"\n=== Turn {i}: {instruction} ===")
+        new_ids = tok.encode(prompt, add_special_tokens=False)
         input_ids = history_ids + new_ids
 
         cache.insert(input_ids)
-        print("Inserted conversation so far into KV-cache.")
+        print("Inserted full text so far into KV-cache.")
 
         inputs = torch.tensor([input_ids], device=device)
         gen_cfg = GenerationConfig(
-            max_new_tokens=200,
+            max_new_tokens=300,
             do_sample=True,
             top_k=50,
             temperature=0.7,
@@ -75,11 +81,11 @@ def main():
         out = model.generate(inputs, generation_config=gen_cfg)[0].tolist()
 
         resp_ids = out[len(input_ids):]
-        reply = tok.decode(resp_ids, skip_special_tokens=True).strip()
-        print(f"LLM replies → {reply!r}")
+        essay = tok.decode(resp_ids, skip_special_tokens=True).strip()
+        print(f"LLM output → {essay!r}")
 
         cache.insert(resp_ids)
-        print("Inserted response into KV-cache.")
+        print("Inserted edited essay into KV-cache.")
 
         history_ids = input_ids + resp_ids
 
@@ -90,4 +96,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
