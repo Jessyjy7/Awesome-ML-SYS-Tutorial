@@ -1,12 +1,7 @@
 #!/usr/bin/env python3
-import sys
 import torch
 from graphviz import Digraph
-from transformers import (
-    AutoTokenizer,
-    AutoModelForCausalLM,
-    GenerationConfig,
-)
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from sglang.srt.mem_cache.radix_cache import RadixCache, TreeNode
 
 def dump(node: TreeNode, depth=0, tok=None):
@@ -35,17 +30,22 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    tok = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf", use_fast=False)
+    tok = AutoTokenizer.from_pretrained(
+        "meta-llama/Llama-2-7b-chat-hf",
+        use_fast=False,
+        use_auth_token=True
+    )
     tok.pad_token_id = tok.eos_token_id
 
     model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
         device_map="auto" if device == "cuda" else None,
-        load_in_8bit=False
+        load_in_8bit=False,
+        use_auth_token=True
     )
 
-    cache = RadixCache(None, None, page_size=4, disable=False)
+    cache = RadixCache(None, None, page_size=1, disable=False)
 
     prompts = [
         "Hello, I have a statement that needs refinement, please change all the I to we in the following statement and keep the rest the same. I start working on SGLang two months ago, I first try to explore the tree structure then visualize it.",
@@ -55,34 +55,39 @@ def main():
         "Hello, how are you now after our talk?"
     ]
 
+    history_ids = []
     for turn, text in enumerate(prompts, start=1):
-        print(f"\n=== Turn {turn}: Prompt → {text!r} ===")
+        print(f"\n=== Turn {turn} ===")
+        new_ids = tok.encode(text, add_special_tokens=False)
+        input_ids = history_ids + new_ids
 
-        ids = tok.encode(text, add_special_tokens=False)
-        cache.insert(ids)
-        print("Prompt inserted into KV-cache.")
+        cache.insert(input_ids)
+        print("Inserted conversation so far into KV-cache.")
 
-        inputs = tok(text, return_tensors="pt").to(device)
-        gen_config = GenerationConfig(
+        inputs = torch.tensor([input_ids], device=device)
+        gen_cfg = GenerationConfig(
             max_new_tokens=200,
             do_sample=True,
             top_k=50,
             temperature=0.7,
             pad_token_id=tok.pad_token_id
         )
-        out = model.generate(**inputs, generation_config=gen_config)
-        out_ids = out[0].tolist()
-        resp_ids = out_ids[len(inputs.input_ids[0]):]
+        out = model.generate(inputs, generation_config=gen_cfg)[0].tolist()
+
+        resp_ids = out[len(input_ids):]
         reply = tok.decode(resp_ids, skip_special_tokens=True).strip()
-        print(f"Llama-2 replies → {reply!r}")
+        print(f"LLM replies → {reply!r}")
 
         cache.insert(resp_ids)
-        print("Response inserted into KV-cache.")
+        print("Inserted response into KV-cache.")
 
-        print("\nText dump of KV-cache:")
+        history_ids = input_ids + resp_ids
+
+        print("\nCurrent KV-cache tree:")
         dump(cache.root_node, tok=tok)
 
     graphviz_dump(cache.root_node, out_path="kv_tree.dot")
 
 if __name__ == "__main__":
     main()
+
