@@ -1,0 +1,87 @@
+#!/usr/bin/env python3
+import torch
+from graphviz import Digraph
+from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
+from sglang.srt.mem_cache.radix_cache import RadixCache, TreeNode
+
+def dump(node: TreeNode, depth=0, tok=None):
+    indent = "  " * depth
+    ids = node.key
+    text = tok.decode(ids, skip_special_tokens=True) if tok and ids else ""
+    print(f"{indent!r:<12} → {text!r}  (len={len(ids):2}, refs={node.lock_ref})")
+    for child in node.children.values():
+        dump(child, depth + 1, tok)
+
+def graphviz_dump(root: TreeNode, tok: AutoTokenizer, out_path="kv_tree.dot"):
+    dot = Digraph(format="png")
+    def visit(node: TreeNode, uid="root"):
+        if node.key:
+            text = tok.decode(node.key, clean_up_tokenization_spaces=True)
+            label = text.replace("\n", "\\n")
+        else:
+            label = "·"
+        dot.node(uid, f"{label}\\n(len={len(node.key)})")
+        for i, child in enumerate(node.children.values()):
+            cid = f"{uid}.{i}"
+            dot.edge(uid, cid)
+            visit(child, cid)
+    visit(root)
+    dot.save(out_path)
+
+def main():
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    tok = AutoTokenizer.from_pretrained(
+        "meta-llama/Llama-2-7b-chat-hf",
+        use_fast=False,
+        use_auth_token=True
+    )
+    tok.pad_token_id = tok.eos_token_id
+    model = AutoModelForCausalLM.from_pretrained(
+        "meta-llama/Llama-2-7b-chat-hf",
+        torch_dtype=torch.float16 if device=="cuda" else torch.float32,
+        device_map="auto" if device=="cuda" else None,
+        load_in_8bit=False,
+        use_auth_token=True
+    )
+    cache = RadixCache(None, None, page_size=1, disable=False)
+
+    history_ids = []
+
+    prompts = [
+        "Mary is 4 years old.\n"
+        "John is three times Mary’s age.\n"
+        "Tom is 2 years younger than John.\n"
+        "What is Tom’s age? Think step by step.",
+
+        "Refine your step-by-step explanation to be as concise as possible.",
+
+        "Now label each step with which relation it uses "
+        "(e.g. \"Step 1 (Mary’s age): …\")."
+    ]
+
+    for instr in prompts:
+        instr_ids = tok.encode(instr, add_special_tokens=False)
+        cache.insert(instr_ids)
+
+        input_ids = history_ids + instr_ids
+        inputs = torch.tensor([input_ids], device=device)
+        cfg = GenerationConfig(
+            max_new_tokens=200,
+            do_sample=False,
+            pad_token_id=tok.pad_token_id
+        )
+        out = model.generate(inputs, generation_config=cfg)[0].tolist()
+
+        resp_ids = out[len(input_ids):]
+        cache.insert(resp_ids)
+
+        history_ids = input_ids + resp_ids
+
+        print("\nCurrent KV-cache tree:")
+        dump(cache.root_node, tok=tok)
+
+    graphviz_dump(cache.root_node, tok, out_path="kv_tree.dot")
+    print("Wrote kv_tree.dot")
+
+if __name__ == "__main__":
+    main()
