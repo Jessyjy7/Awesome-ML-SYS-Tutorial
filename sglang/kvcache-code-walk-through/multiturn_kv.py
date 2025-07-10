@@ -27,24 +27,28 @@ def graphviz_dump(root: TreeNode, out_path="kv_tree.dot"):
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     tok = AutoTokenizer.from_pretrained(
-        "meta-llama/Llama-2-7b-chat-hf",
-        use_fast=False,
-        use_auth_token=True
+        "meta-llama/Llama-2-7b-chat-hf", use_fast=False, use_auth_token=True
     )
     tok.pad_token_id = tok.eos_token_id
     model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
-        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        device_map="auto" if device == "cuda" else None,
+        torch_dtype=torch.float16 if device=="cuda" else torch.float32,
+        device_map="auto" if device=="cuda" else None,
         load_in_8bit=False,
         use_auth_token=True
     )
     cache = RadixCache(None, None, page_size=1, disable=False)
+
     essay = (
         "Once upon a time in a galaxy far away, there lived an explorer who "
         "sought knowledge beyond the stars. The explorer built a ship with "
         "advanced technology and embarked on a journey to discover new worlds."
     )
+
+    essay_ids = tok.encode(essay, add_special_tokens=False)
+    cache.insert(essay_ids)
+    history_ids = essay_ids
+
     prompts = [
         "Refine grammar and style of this essay",
         "The essay still needs refinement, please convert all verbs to past tense",
@@ -52,25 +56,35 @@ def main():
         "The essay still needs refinement, please shorten the conclusion",
         "The essay still needs refinement, please improve overall flow and coherence"
     ]
-    history_ids = []
+
     for instr in prompts:
-        prompt_text = essay + "\n\n" + instr
-        new_ids = tok.encode(prompt_text, add_special_tokens=False)
-        all_ids = history_ids + new_ids
-        cache.insert(all_ids)
-        inputs = torch.tensor([all_ids], device=device)
-        cfg = GenerationConfig(max_new_tokens= len(new_ids) + 200, do_sample=False, pad_token_id=tok.pad_token_id)
+        instr_ids = tok.encode(instr, add_special_tokens=False)
+        cache.insert(instr_ids)
+
+        input_ids = history_ids + instr_ids
+        inputs = torch.tensor([input_ids], device=device)
+        cfg = GenerationConfig(
+            max_new_tokens=200,
+            do_sample=False,
+            pad_token_id=tok.pad_token_id
+        )
         out = model.generate(inputs, generation_config=cfg)[0].tolist()
-        resp_ids = out[len(all_ids):]
+
+        resp_ids = out[len(input_ids):]
         essay = tok.decode(resp_ids, skip_special_tokens=True).strip()
         cache.insert(resp_ids)
-        history_ids = all_ids + resp_ids
+
+        history_ids = input_ids + resp_ids
+
         print("\nCurrent KV-cache tree:")
         dump(cache.root_node, tok=tok)
+
     graphviz_dump(cache.root_node)
     print("Wrote kv_tree.dot")
+
 if __name__ == "__main__":
     main()
+
 
 
 
