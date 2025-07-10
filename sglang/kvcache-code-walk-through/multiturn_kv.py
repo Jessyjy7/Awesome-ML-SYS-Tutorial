@@ -12,15 +12,19 @@ def dump(node: TreeNode, depth=0, tok=None):
     for child in node.children.values():
         dump(child, depth + 1, tok)
 
-def graphviz_dump(root: TreeNode, out_path="kv_tree.dot"):
+def graphviz_dump(root: TreeNode, tok: AutoTokenizer, out_path="kv_tree.dot"):
     dot = Digraph(format="png")
-    def visit(node, uid="root"):
-        label = "".join("█" for _ in node.key) or "·"
+    def visit(node: TreeNode, uid="root"):
+        if node.key:
+            text = tok.decode(node.key, clean_up_tokenization_spaces=True)
+            label = text.replace("\n", "\\n")
+        else:
+            label = "·"
         dot.node(uid, f"{label}\\n(len={len(node.key)})")
-        for i, c in enumerate(node.children.values()):
+        for i, child in enumerate(node.children.values()):
             cid = f"{uid}.{i}"
             dot.edge(uid, cid)
-            visit(c, cid)
+            visit(child, cid)
     visit(root)
     dot.save(out_path)
 
@@ -79,11 +83,12 @@ def main():
         print("\nCurrent KV-cache tree:")
         dump(cache.root_node, tok=tok)
 
-    graphviz_dump(cache.root_node)
+    graphviz_dump(cache.root_node, tok, out_path="kv_tree.dot")
     print("Wrote kv_tree.dot")
 
 if __name__ == "__main__":
     main()
+
 
 
 
