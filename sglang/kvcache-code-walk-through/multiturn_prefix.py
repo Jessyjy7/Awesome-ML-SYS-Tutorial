@@ -28,26 +28,6 @@ def graphviz_dump(root: TreeNode, tok: AutoTokenizer, out_path="kv_tree.dot"):
     visit(root)
     dot.save(out_path)
 
-def safe_match_prefix(cache: RadixCache, ids: list[int]):
-    try:
-        return cache.match_prefix(ids)
-    except TypeError:
-        # fallback: walk down manually to get last node
-        node = cache.root_node
-        idx  = 0
-        while idx < len(ids):
-            rem    = ids[idx:]
-            key    = cache.get_child_key_fn(rem)
-            child  = node.children.get(key)
-            if not child:
-                break
-            pref_len = cache.key_match_fn(child.key, rem)
-            if pref_len == 0:
-                break
-            idx += pref_len
-            node  = child
-        return torch.empty(0, dtype=torch.int64), node
-
 def prefix_length(node: TreeNode) -> int:
     total = 0
     while node.parent:
@@ -57,14 +37,8 @@ def prefix_length(node: TreeNode) -> int:
 
 def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    tok = AutoTokenizer.from_pretrained(
-        "meta-llama/Llama-2-7b-chat-hf",
-        use_fast=False,
-        token=True
-    )
+    tok = AutoTokenizer.from_pretrained("meta-llama/Llama-2-7b-chat-hf", use_fast=False, token=True)
     tok.pad_token_id = tok.eos_token_id
-
     model = AutoModelForCausalLM.from_pretrained(
         "meta-llama/Llama-2-7b-chat-hf",
         torch_dtype=torch.float16 if device=="cuda" else torch.float32,
@@ -72,9 +46,7 @@ def main():
         load_in_8bit=False,
         token=True
     )
-
     cache = RadixCache(None, None, page_size=1, disable=False)
-
     essay = (
         "Once upon a time in a galaxy far away, there lived an explorer who "
         "sought knowledge beyond the stars. The explorer built a ship with "
@@ -82,7 +54,6 @@ def main():
     )
     history_ids = tok.encode(essay, add_special_tokens=False)
     cache.insert(history_ids)
-
     prompts = [
         "Refine grammar and style of this essay",
         "The essay still needs refinement, please convert all verbs to past tense",
@@ -90,40 +61,32 @@ def main():
         "The essay still needs refinement, please shorten the conclusion",
         "The essay still needs refinement, please improve overall flow and coherence"
     ]
-
     for instr in prompts:
         instr_ids   = tok.encode(instr, add_special_tokens=False)
         full_prompt = history_ids + instr_ids
-
-        _, last_node = safe_match_prefix(cache, full_prompt)
+        _, last_node = cache.match_prefix(full_prompt)
         mlen         = prefix_length(last_node)
-        to_add       = full_prompt[mlen:]
-        if to_add:
-            cache.insert(to_add)
-
+        suffix       = full_prompt[mlen:]
+        if suffix:
+            cache.insert(suffix)
         inputs = torch.tensor([full_prompt], device=device)
-        cfg    = GenerationConfig(max_new_tokens=200,
-                                  do_sample=False,
-                                  pad_token_id=tok.pad_token_id)
-        out     = model.generate(inputs, generation_config=cfg)[0].tolist()
+        cfg    = GenerationConfig(max_new_tokens=200, do_sample=False, pad_token_id=tok.pad_token_id)
+        out    = model.generate(inputs, generation_config=cfg)[0].tolist()
         resp_ids = out[len(full_prompt):]
-
-        _, last_node = safe_match_prefix(cache, resp_ids)
+        _, last_node = cache.match_prefix(resp_ids)
         mlen         = prefix_length(last_node)
-        to_add       = resp_ids[mlen:]
-        if to_add:
-            cache.insert(to_add)
-
+        suffix       = resp_ids[mlen:]
+        if suffix:
+            cache.insert(suffix)
         history_ids = full_prompt + resp_ids
-
         print("\nCurrent KV-cache tree:")
         dump(cache.root_node, tok=tok)
-
     graphviz_dump(cache.root_node, tok, out_path="kv_tree.dot")
     print("Wrote kv_tree.dot")
 
 if __name__ == "__main__":
     main()
+
 
 
 
