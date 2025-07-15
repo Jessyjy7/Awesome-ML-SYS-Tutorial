@@ -4,57 +4,53 @@ from graphviz import Digraph
 from transformers import AutoTokenizer, AutoModelForCausalLM, GenerationConfig
 from sglang.srt.mem_cache.radix_cache import RadixCache, TreeNode
 
-_orig_match_prefix = RadixCache.match_prefix
-def _patched_match_prefix(self, key, **kwargs):
-    if self.disable or not key:
-        return torch.empty((0,), dtype=torch.int64, device=self.device), self.root_node
-
-    if self.page_size != 1:
-        L = len(key) // self.page_size * self.page_size
-        key = key[:L]
-
-    value_list, last_node = self._match_prefix_helper(self.root_node, key)
-
-    tensors = [
-        torch.tensor(v, dtype=torch.int64, device=self.device)
-        for v in value_list
-    ]
-    if tensors:
-        value = torch.cat(tensors)
-    else:
-        value = torch.empty((0,), dtype=torch.int64, device=self.device)
-
-    return value, last_node
-
-RadixCache.match_prefix = _patched_match_prefix
-
 def dump(node: TreeNode, depth=0, tok=None):
     indent = "  " * depth
     ids    = node.key
-    text   = tok.decode(ids, skip_special_tokens=True) if (tok and ids) else ""
+    text   = tok.decode(ids, skip_special_tokens=True) if tok and ids else ""
     print(f"{indent!r:<12} → {text!r}  (len={len(ids):2}, refs={node.lock_ref})")
-    for c in node.children.values():
-        dump(c, depth+1, tok)
+    for child in node.children.values():
+        dump(child, depth+1, tok)
 
 def graphviz_dump(root: TreeNode, tok: AutoTokenizer, out_path="kv_tree.dot"):
     dot = Digraph(format="png")
-    def visit(n: TreeNode, uid="root"):
-        if n.key:
-            txt = tok.decode(n.key, clean_up_tokenization_spaces=True)
-            lbl = txt.replace("\n","\\n")
+    def visit(node: TreeNode, uid="root"):
+        if node.key:
+            t     = tok.decode(node.key, clean_up_tokenization_spaces=True)
+            label = t.replace("\n","\\n")
         else:
-            lbl = "·"
-        dot.node(uid, f"{lbl}\\n(len={len(n.key)})")
-        for i, ch in enumerate(n.children.values()):
+            label = "·"
+        dot.node(uid, f"{label}\\n(len={len(node.key)})")
+        for i, c in enumerate(node.children.values()):
             cid = f"{uid}.{i}"
             dot.edge(uid, cid)
-            visit(ch, cid)
+            visit(c, cid)
     visit(root)
     dot.save(out_path)
 
+def safe_match_prefix(cache: RadixCache, ids: list[int]):
+    try:
+        return cache.match_prefix(ids)
+    except TypeError:
+        # fallback: walk down manually to get last node
+        node = cache.root_node
+        idx  = 0
+        while idx < len(ids):
+            rem    = ids[idx:]
+            key    = cache.get_child_key_fn(rem)
+            child  = node.children.get(key)
+            if not child:
+                break
+            pref_len = cache.key_match_fn(child.key, rem)
+            if pref_len == 0:
+                break
+            idx += pref_len
+            node  = child
+        return torch.empty(0, dtype=torch.int64), node
+
 def prefix_length(node: TreeNode) -> int:
     total = 0
-    while node.parent is not None:
+    while node.parent:
         total += len(node.key)
         node = node.parent
     return total
@@ -99,25 +95,24 @@ def main():
         instr_ids   = tok.encode(instr, add_special_tokens=False)
         full_prompt = history_ids + instr_ids
 
-        # use patched match_prefix directly
-        _, last_node = cache.match_prefix(full_prompt)
+        _, last_node = safe_match_prefix(cache, full_prompt)
         mlen         = prefix_length(last_node)
-        tail         = full_prompt[mlen:]
-        if tail:
-            cache.insert(tail)
+        to_add       = full_prompt[mlen:]
+        if to_add:
+            cache.insert(to_add)
 
         inputs = torch.tensor([full_prompt], device=device)
         cfg    = GenerationConfig(max_new_tokens=200,
                                   do_sample=False,
                                   pad_token_id=tok.pad_token_id)
-        out    = model.generate(inputs, generation_config=cfg)[0].tolist()
+        out     = model.generate(inputs, generation_config=cfg)[0].tolist()
         resp_ids = out[len(full_prompt):]
 
-        _, last_node = cache.match_prefix(resp_ids)
+        _, last_node = safe_match_prefix(cache, resp_ids)
         mlen         = prefix_length(last_node)
-        tail         = resp_ids[mlen:]
-        if tail:
-            cache.insert(tail)
+        to_add       = resp_ids[mlen:]
+        if to_add:
+            cache.insert(to_add)
 
         history_ids = full_prompt + resp_ids
 
@@ -129,6 +124,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
